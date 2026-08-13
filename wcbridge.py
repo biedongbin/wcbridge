@@ -85,6 +85,112 @@ def send_text(token, base_url, to_user, text, context_token=None):
                   headers=_headers(token), timeout=API_TIMEOUT).raise_for_status()
 
 
+# ---------- 媒体下载解密（AES-128-ECB/PKCS7，复刻自 weixin_link WeixinImageSaver）----------
+MEDIA_DIR = os.path.join(DATA_DIR, "media")
+os.makedirs(MEDIA_DIR, exist_ok=True)
+
+_EXT_MAGIC = [((b"\xff\xd8\xff",), "jpg"), ((b"\x89PNG\r\n\x0c\x0a",), "png"),
+              ((b"%PDF",), "pdf"), ((b"PK",), "xlsx")]
+
+
+def _key_bytes(aeskey_hex, aes_key_b64):
+    if aeskey_hex:
+        try:
+            b = bytes.fromhex(aeskey_hex)
+            if len(b) == 16:
+                return b
+        except ValueError:
+            pass
+    if aes_key_b64:
+        try:
+            return base64.b64decode(aes_key_b64)
+        except Exception:
+            pass
+    return b""
+
+
+def _decrypt(aeskey_hex, aes_key_b64, data):
+    key = _key_bytes(aeskey_hex, aes_key_b64)
+    if not key:
+        return data
+    if len(key) != 16:
+        try:
+            key = bytes.fromhex(key.decode("ascii"))
+        except Exception:
+            pass
+    if len(key) != 16:
+        return data
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    dec = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
+    out = dec.update(data) + dec.finalize()
+    pad = out[-1] if out else 0
+    if 0 < pad <= 16:
+        out = out[:-pad]
+    return out
+
+
+def _detect_ext(data, fallback):
+    if fallback:
+        return fallback
+    for magic, ext in _EXT_MAGIC:
+        if data[:len(magic[0])] == magic[0]:
+            return ext
+    return "bin"
+
+
+def _ext_from_name(file_name):
+    import re
+    if not file_name:
+        return None
+    mt = re.search(r"\.([A-Za-z0-9]{1,8})$", file_name)
+    return mt.group(1).lower() if mt else None
+
+
+def save_media(aeskey_hex, aes_key_b64, full_url, file_name):
+    """下载 + 解密 + 落盘 data/media/。返回 {path, ext, size} 或 None。"""
+    if not full_url:
+        return None
+    try:
+        enc = requests.get(full_url, timeout=30).content
+        dec = _decrypt(aeskey_hex, aes_key_b64, enc)
+        ext = _detect_ext(dec, _ext_from_name(file_name))
+        name = f"{uuid.uuid4().hex}.{ext}"
+        path = os.path.join(MEDIA_DIR, name)
+        with open(path, "wb") as f:
+            f.write(dec)
+        return {"path": path, "ext": ext, "size": len(dec)}
+    except Exception as e:
+        print(f"[media-error] {e}")
+        return None
+
+
+def extract_items(m):
+    """从一条微信消息提取多个条目：[{type:text|image|file, text|path|name}]。
+    一条消息可能含文本+图片+文件多个 item，每个独立成条。"""
+    out = []
+    for it in m.get("item_list") or []:
+        t = it.get("type")
+        if t == 1 and it.get("text_item"):  # TEXT
+            txt = it["text_item"].get("text", "")
+            if txt:
+                out.append({"type": "text", "text": txt})
+        elif t == 2 and it.get("image_item"):  # IMAGE
+            ii = it["image_item"]
+            mo = ii.get("media") or {}
+            r = save_media(ii.get("aeskey"), mo.get("aes_key"), mo.get("full_url"), None)
+            if r:
+                out.append({"type": "image", "path": r["path"], "ext": r["ext"], "size": r["size"]})
+        elif t == 4 and it.get("file_item"):  # FILE
+            fi = it["file_item"]
+            mo = fi.get("media") or {}
+            fname = fi.get("file_name") or ""
+            r = save_media(fi.get("aeskey"), mo.get("aes_key"), mo.get("full_url"), fname)
+            if r:
+                out.append({"type": "file", "path": r["path"], "name": fname,
+                            "ext": r["ext"], "size": r["size"]})
+    return out
+
+
 # ---------- 凭证 ----------
 
 def load_credential():
@@ -310,22 +416,23 @@ def run():
                     to_user = uid
                     STATE["user"] = uid
                     print(f"[link] 关联微信用户: {uid}")
-                # 提取文本
-                text = ""
-                for it in m.get("item_list") or []:
-                    if it.get("type") == 1 and it.get("text_item"):
-                        text = it["text_item"].get("text", "")
-                        break
-                if not text:
+                # 提取条目（文本/图片/文件，一条消息可多个 item）
+                items = extract_items(m)
+                if not items:
                     continue
-                entry = {"ts": int(time.time()), "from": uid, "text": text}
-                append_line(INBOX, entry)  # log 方式（兼容）
-                with STATE["lock"]:        # 内存方式（HTTP 秒级读）
-                    STATE["inbox_seq"] += 1
-                    entry2 = dict(entry)
-                    entry2["seq"] = STATE["inbox_seq"]
-                    STATE["inbox"].append(entry2)
-                print(f"[inbound] {text[:60]}")
+                for it in items:
+                    entry = {"ts": int(time.time()), "from": uid, "type": it["type"]}
+                    entry.update(it)
+                    append_line(INBOX, entry)  # log 方式（兼容）
+                    with STATE["lock"]:        # 内存方式（HTTP 秒级读）
+                        STATE["inbox_seq"] += 1
+                        entry2 = dict(entry)
+                        entry2["seq"] = STATE["inbox_seq"]
+                        STATE["inbox"].append(entry2)
+                    if it["type"] == "text":
+                        print(f"[inbound] text: {it['text'][:60]}")
+                    else:
+                        print(f"[inbound] {it['type']}: {it.get('name') or os.path.basename(it.get('path',''))}")
         except Exception as e:
             print(f"[poll-error] {e}")
             time.sleep(3)

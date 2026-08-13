@@ -2,9 +2,9 @@
 
 **A minimal bridge between WeChat and any AI CLI.**
 
-WeChat → `wcbridge` → your agent (Claude Code, opencode, codex, or any tool that can `curl` or read a file), and back. A pure message channel — no business logic, no database, no dependencies beyond `requests`.
+WeChat → `wcbridge` → your agent (Claude Code, opencode, codex, or any tool that can `curl` or read a file), and back. A pure message channel — supports **text, images, and files**. No business logic, no database, dependencies are just `requests` + `cryptography`.
 
-把微信与任意 AI CLI 打通的极简桥。微信 → `wcbridge` → 你的 agent（Claude Code / opencode / codex，或任何能 `curl` 或读文件的工具），再原路返回。纯消息通道，零业务逻辑，零数据库，依赖只有 `requests`。
+把微信与任意 AI CLI 打通的极简桥。微信 → `wcbridge` → 你的 agent（Claude Code / opencode / codex，或任何能 `curl` 或读文件的工具），再原路返回。纯消息通道，**支持文本、图片、文件**，零业务逻辑，零数据库，依赖仅 `requests` + `cryptography`。
 
 ---
 
@@ -50,6 +50,20 @@ Claude Code (或任何本地脚本)
 - `GET /health` — 存活检查 / liveness
 - `GET /inbox?since=N` — 拉取序号 > N 的新消息 / pull messages newer than N
 - `POST /outbox` — body `{"text":"..."}` 发一条消息到微信 / send a message to WeChat
+
+### 消息类型 / Message types
+
+inbox 里的每条消息带 `type` 字段：
+
+| type | 含义 | 额外字段 |
+|---|---|---|
+| `text` | 文本消息 | `text` |
+| `image` | 图片（已下载解密落盘） | `path`, `ext`, `size` |
+| `file` | 文件（已下载解密落盘） | `path`, `name`, `ext`, `size` |
+
+图片和文件通过 iLink 的 AES-128-ECB 加密媒体通道下载、解密后落到 `data/media/`，inbox 只返回本地路径，agent 直接读文件即可。
+
+Images and files are downloaded via iLink's AES-128-ECB encrypted media channel, decrypted, and saved to `data/media/`. The inbox returns a local `path`; the agent just reads the file.
 
 > wcbridge uses the iLink bot protocol (same login flow as a WeChat bot). You scan a QR code once, the credential is saved locally, and the bridge long-polls for incoming messages.
 
@@ -207,8 +221,9 @@ wcbridge/
 ├── LICENSE            # MIT
 ├── README.md          # 本文件 / this file
 ├── .gitignore
-├── data/              # 凭证（已 gitignore）/ credentials (ignored)
-│   └── credential.json
+├── data/              # 凭证 + 媒体（已 gitignore）/ credentials + media (ignored)
+│   ├── credential.json
+│   └── media/         # 下载的图片/文件 / downloaded images & files
 ├── inbox.log          # 微信→本地（已 gitignore）/ inbound (ignored)
 ├── outbox.log         # 本地→微信（已 gitignore）/ outbound (ignored)
 └── session.link       # 关联的微信身份（已 gitignore）/ linked user (ignored)
