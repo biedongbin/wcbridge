@@ -1,10 +1,20 @@
-# wcbridge
+# mobile-ai-bridge
 
 **[English](README.md)** | [中文](README.zh-CN.md)
 
-A minimal bridge between WeChat and any AI CLI.
+Minimal bridges between mobile chat apps and any AI CLI.
 
-WeChat → `wcbridge` → your agent (Claude Code, opencode, codex, or any tool that can `curl` or read a file), and back. A pure message channel — supports **text, images, and files**. No business logic, no database; dependencies are just `requests` + `cryptography`.
+**WeChat / 飞书 / 钉钉** → your agent (Claude Code, opencode, codex, or any tool that can `curl` or read a file), and back. Three independent bridges, same design: pure message channel, **text + images + files**, local HTTP + log interface, no business logic.
+
+| Bridge | App | Script | HTTP port | Receive mode |
+|---|---|---|---|---|
+| wechatbridge | WeChat | `wechatbridge.py` | 7654 | iLink long-poll |
+| feishubridge | Feishu/Lark | `feishubridge.py` | 7655 | WebSocket (长连接) |
+| dingbridge | DingTalk | `dingbridge.py` | 7656 | Stream (WebSocket) |
+
+Each bridge is a standalone single file. Run any combination. They never depend on each other.
+
+> The WeChat bridge is **plug-and-play** (scan a QR code, like a bot login). The Feishu/DingTalk bridges require you to create an enterprise internal app on their open platforms and fill in app credentials — see each script's header docstring.
 
 ---
 
@@ -113,6 +123,37 @@ await fetch("http://127.0.0.1:7654/outbox", {
 ### MCP
 
 The HTTP endpoints map naturally to MCP tools (`get_inbox` / `send_reply`). Wrap them and any MCP client can drive WeChat.
+
+---
+
+## Other bridges (Feishu / DingTalk)
+
+The WeChat bridge is plug-and-play. The Feishu and DingTalk bridges follow the same inbox/outbox/HTTP design but need an enterprise internal app first.
+
+### Feishu (`feishubridge.py`, port 7655)
+
+1. Create a self-built app at `https://open.feishu.cn/app`, enable the **Bot** capability.
+2. Event subscription → choose **"Receive events via long connection"** (WebSocket) → subscribe to `im.message.receive_v1`.
+3. Grant permissions: `im:message`, `im:message:send_as_bot`, `im:resource`.
+4. Save App ID / App Secret to `data/credential.json`:
+   ```json
+   {"app_id": "cli_xxx", "app_secret": "xxx"}
+   ```
+5. `pip install lark-oapi requests` then `python feishubridge.py`.
+
+Long-connection mode runs locally — **no public network / webhook needed**.
+
+### DingTalk (`dingbridge.py`, port 7656)
+
+1. Create an enterprise internal app at `https://open-dev.dingtalk.com`, enable the **Robot** capability.
+2. Set message push mode to **Stream mode** (WebSocket); subscribe to chat messages.
+3. Save App Key / App Secret to `data/credential.json`:
+   ```json
+   {"app_key": "dingxxx", "app_secret": "xxx"}
+   ```
+4. `pip install dingtalk-stream requests` then `python dingbridge.py`.
+
+Both expose the same `GET /inbox?since=N`, `POST /outbox`, `GET /health` as the WeChat bridge — any agent code works unchanged across the three, just different ports.
 
 ---
 

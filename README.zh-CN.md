@@ -1,10 +1,20 @@
-# wcbridge
+# mobile-ai-bridge
 
 [English](README.md) | **[中文](README.zh-CN.md)**
 
-一个把微信与任意 AI CLI 打通的极简桥。
+把移动端聊天 App 与任意 AI CLI 打通的极简桥集合。
 
-微信 → `wcbridge` → 你的 agent（Claude Code / opencode / codex，或任何能 `curl` 或读文件的工具），再原路返回。纯消息通道，**支持文本、图片、文件**，零业务逻辑，零数据库，依赖仅 `requests` + `cryptography`。
+**微信 / 飞书 / 钉钉** → 你的 agent（Claude Code / opencode / codex，或任何能 `curl` 或读文件的工具），再原路返回。三个独立桥，同一设计：纯消息通道，**文本 + 图片 + 文件**，本地 HTTP + log 双接口，零业务逻辑。
+
+| 桥 | App | 脚本 | HTTP 端口 | 接收模式 |
+|---|---|---|---|---|
+| wechatbridge | 微信 | `wechatbridge.py` | 7654 | iLink 长轮询 |
+| feishubridge | 飞书 | `feishubridge.py` | 7655 | 长连接 (WebSocket) |
+| dingbridge | 钉钉 | `dingbridge.py` | 7656 | Stream (WebSocket) |
+
+每个桥都是独立的单文件，可任意组合运行，互不依赖。
+
+> 微信桥**即装即用**（扫码登录，类似 bot 登录）。飞书/钉钉桥需在各自开放平台创建企业内部应用并填凭证——见各脚本头部文档注释。
 
 ---
 
@@ -113,6 +123,37 @@ await fetch("http://127.0.0.1:7654/outbox", {
 ### MCP
 
 HTTP 接口天然映射为 MCP tool（`get_inbox` / `send_reply`），包一层任何 MCP 客户端就能驱动微信。
+
+---
+
+## 其它桥（飞书 / 钉钉）
+
+微信桥即装即用。飞书、钉钉桥遵循同样的 inbox/outbox/HTTP 设计，但需先创建企业内部应用。
+
+### 飞书（`feishubridge.py`，端口 7655）
+
+1. 在 `https://open.feishu.cn/app` 创建自建应用，开通**机器人**能力。
+2. 事件订阅 → 选择**「使用长连接接收事件」**（WebSocket）→ 订阅 `im.message.receive_v1`。
+3. 权限：`im:message`、`im:message:send_as_bot`、`im:resource`。
+4. App ID / App Secret 填到 `data/credential.json`：
+   ```json
+   {"app_id": "cli_xxx", "app_secret": "xxx"}
+   ```
+5. `pip install lark-oapi requests`，然后 `python feishubridge.py`。
+
+长连接模式本地即可运行——**无需公网/webhook**。
+
+### 钉钉（`dingbridge.py`，端口 7656）
+
+1. 在 `https://open-dev.dingtalk.com` 创建企业内部应用，开通**机器人**能力。
+2. 消息推送模式设为 **Stream 模式**（WebSocket），订阅聊天消息。
+3. App Key / App Secret 填到 `data/credential.json`：
+   ```json
+   {"app_key": "dingxxx", "app_secret": "xxx"}
+   ```
+4. `pip install dingtalk-stream requests`，然后 `python dingbridge.py`。
+
+两者都暴露和微信桥相同的 `GET /inbox?since=N`、`POST /outbox`、`GET /health` —— 任何 agent 代码在三个桥间无需修改，只是端口不同。
 
 ---
 
