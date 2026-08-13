@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""wcbridge — 微信 ↔ Claude Code 纯消息桥。
+"""wcbridge — 微信 ↔ 任意 AI CLI 纯消息桥（Claude Code / opencode / codex / 桌面端通用）。
 
-零业务逻辑，纯通道。两个 log 文件解耦微信与 Claude Code：
-  inbox.log   微信消息流入（CC 轮询读，当用户指令执行）
-  outbox.log  CC 回复流出（本脚本轮询读 → 发微信）
+零业务逻辑，纯通道。HTTP + log 双接口，任何能 curl 或读文件的程序都能接入：
+  inbox.log   微信消息流入（agent 读，当用户指令执行）
+  outbox.log  agent 回复流出（本脚本轮询读 → 发微信）
+  HTTP        GET /inbox?since=N / POST /outbox / GET /health（秒级，推荐）
 
 用法：
   python wcbridge.py --login          扫码登录（凭证落 data/credential.json）
@@ -34,7 +35,7 @@ API_TIMEOUT = 35
 LOGIN_DEADLINE = 480
 MAX_QR_REFRESH = 3
 
-# HTTP 服务端口（CC 通过此端口秒级读写，替代轮询 log）
+# HTTP 服务端口（agent 通过此端口秒级读写，替代轮询 log）
 HTTP_PORT = 7654
 
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -173,10 +174,10 @@ def read_new_lines(path, pos):
     return lines, pos
 
 
-# ---------- HTTP 接口（供 CC 秒级读写，替代 log 轮询）----------
+# ---------- HTTP 接口（供 agent 秒级读写，替代 log 轮询）----------
 # 运行时状态：HTTP handler 与主循环通过此 dict 交互
 STATE = {
-    "inbox": [],        # 待 CC 读取的消息队列 [{ts,from,text}]
+    "inbox": [],        # 待 agent 读取的消息队列 [{ts,from,text,seq}]
     "inbox_seq": 0,     # 单调递增序号
     "outbox": [],       # 待发送队列 [{ts,text}]（HTTP POST 入队，主循环消费）
     "lock": threading.Lock(),
@@ -185,7 +186,7 @@ STATE = {
 
 
 def _enqueue_outbox(text):
-    """CC POST /outbox 调用：入队一条待发消息。"""
+    """agent POST /outbox 调用：入队一条待发消息。"""
     with STATE["lock"]:
         STATE["outbox"].append({"ts": int(time.time()), "text": text})
     return True
@@ -209,7 +210,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "user": STATE["user"]})
             return
         if u.path == "/inbox":
-            # CC 传 since=N，返回 seq>N 的所有消息
+            # agent 传 since=N，返回 seq>N 的所有消息
             q = parse_qs(u.query)
             since = int(q.get("since", ["0"])[0])
             with STATE["lock"]:
@@ -280,7 +281,7 @@ def run():
     while True:
         # 当前关联用户（每轮动态读，支持外部写入 session.link）
         to_user = STATE["user"] = _load_linked_user() or STATE["user"]
-        # 1) 长轮询微信 → inbox（同时写 log 和内存 STATE，供 CC 两种方式读）
+        # 1) 长轮询微信 → inbox（同时写 log 和内存 STATE，供 agent 两种方式读）
         try:
             resp = get_updates(token, base_url, cursor)
             if resp.get("ret") not in (None, 0):

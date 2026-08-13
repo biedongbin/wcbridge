@@ -1,10 +1,10 @@
 # wcbridge
 
-**A minimal bridge between WeChat and Claude Code.**
+**A minimal bridge between WeChat and any AI CLI.**
 
-WeChat → `wcbridge` → Claude Code, and back. A pure message channel — no business logic, no database, no dependencies beyond `requests`.
+WeChat → `wcbridge` → your agent (Claude Code, opencode, codex, or any tool that can `curl` or read a file), and back. A pure message channel — no business logic, no database, no dependencies beyond `requests`.
 
-一个把微信与 Claude Code 打通的极简桥。微信 → `wcbridge` → Claude Code，再原路返回。纯消息通道，零业务逻辑，零数据库，依赖只有 `requests`。
+把微信与任意 AI CLI 打通的极简桥。微信 → `wcbridge` → 你的 agent（Claude Code / opencode / codex，或任何能 `curl` 或读文件的工具），再原路返回。纯消息通道，零业务逻辑，零数据库，依赖只有 `requests`。
 
 ---
 
@@ -66,6 +66,74 @@ Claude Code (或任何本地脚本)
 - **手机远程驱动 Claude Code** — 离开电脑，微信发个任务，Claude Code 接收并回复。这正是它的诞生场景。
 - **微信 ↔ 任意本地脚本** — 通用桥：任何能读文件或调 HTTP 的程序都能和微信对话。
 - **轻量个人微信 bot** — 当完整 bot 框架太重时。
+
+---
+
+## 适配任意 AI CLI / Works With Any AI CLI
+
+wcbridge 是**协议中立**的：只要你的工具能 `curl` 或读文件，就能接入。下面是几种常见 AI CLI 的接法。
+
+wcbridge is **protocol-agnostic**: anything that can `curl` or read a file can hook in.
+
+### 通用接入模式 / Universal pattern
+
+任何 agent 只需做两件事：
+1. **拉指令**：定时 `GET /inbox?since=<last_seq>`（或 tail `inbox.log`）
+2. **回结果**：`POST /outbox {"text":"..."}`（或 append `outbox.log`）
+
+Any agent does just two things: pull instructions, push results.
+
+### Claude Code
+
+用 `CronCreate` 每分钟调度一个值守 prompt（或写个 hook）：
+
+```bash
+# 拉新消息
+curl -s "http://127.0.0.1:7654/inbox?since=$(cat /tmp/wc_last_seq)"
+# 回复
+curl -X POST http://127.0.0.1:7654/outbox -H 'Content-Type: application/json' -d '{"text":"done"}'
+```
+
+### opencode / codex / 其它 CLI
+
+这些 CLI 没有内置定时器，用一个 cron 或后台脚本桥接：
+
+```bash
+# poll.sh — cron 每分钟跑，把微信消息喂给 opencode/codex 的 stdin 或会话
+LAST=$(cat /tmp/wc_last_seq 2>/dev/null || echo 0)
+RESP=$(curl -s "http://127.0.0.1:7654/inbox?since=$LAST")
+SEQ=$(echo "$RESP" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['last_seq'])")
+echo "$RESP" | python3 -c "import sys,json;[print(m['text']) for m in json.load(sys.stdin)['msgs']]" \
+  | opencode chat   # 或: codex exec -  / 任意 CLI
+echo "$SEQ" > /tmp/wc_last_seq
+```
+
+或更简单：让 AI CLI 直接读 `inbox.log`、写 `outbox.log`，连 curl 都不用。
+
+### 桌面端 / GUI 应用
+
+任何能发 HTTP 请求的桌面应用（Electron / Tauri / 甚至浏览器 fetch 到 localhost）都能用：
+
+```js
+// 拉消息
+const r = await fetch("http://127.0.0.1:7654/inbox?since=" + lastSeq);
+// 发消息
+await fetch("http://127.0.0.1:7654/outbox", {
+  method: "POST", headers: {"Content-Type": "application/json"},
+  body: JSON.stringify({text: "Hello"})
+});
+```
+
+### MCP 集成 / MCP
+
+wcbridge 的 HTTP 接口天然适配 MCP——把它包成一个 MCP tool（`get_inbox` / `send_reply`）即可被任何 MCP 客户端调用。示例工具定义：
+
+```json
+{"name": "wechat_inbox", "description": "拉取微信新消息",
+ "inputSchema": {"type":"object","properties":{"since":{"type":"number","default":0}}}}
+```
+
+实现 = 转发到 `GET /inbox?since=N`。
 
 ---
 
