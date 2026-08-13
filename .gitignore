@@ -1,0 +1,14 @@
+# 敏感数据（微信登录凭证）
+data/
+
+# Python
+__pycache__/
+*.pyc
+
+# 运行时 log（消息通道）
+inbox.log
+outbox.log
+session.link
+
+# 系统
+.DS_Store
